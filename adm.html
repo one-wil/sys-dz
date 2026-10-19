@@ -2486,6 +2486,7 @@
 
 @media(max-width:480px){.payment-manager-row,.payment-rip-row{gap:8px;padding:10px}.payment-manager-row strong,.payment-rip-row strong{font-size:13px}.payment-methods-row{gap:7px}.payment-method-chip{font-size:12px}}
 .subscription-footnote{margin-top:16px;color:var(--gray);font-size:13px;line-height:1.8}.subscription-alert{padding:15px 18px;border-radius:12px;margin-bottom:18px;font-weight:700;line-height:1.8;background:#fff4d7;color:#875b00;border-right:5px solid #f8961e}.subscription-alert.danger{background:#ffe8e6;color:#a61e4d;border-right-color:#d90429}.subscription-alert.success{background:#e6f7ed;color:#16824b;border-right-color:#16824b}
+.subscription-gifted-trial{padding:16px 18px;margin:0 0 18px;border-radius:14px;background:linear-gradient(135deg,#fff8d9,#fff0b2);border:1px solid #e8c65a;border-right:5px solid #d4a514;color:#664d00;line-height:1.9;box-shadow:0 5px 16px rgba(180,135,0,.10)}.subscription-gifted-trial strong{display:block;font-size:16px;margin-bottom:3px}.subscription-gifted-trial small{display:block;font-weight:500;color:#79651d}
         @media(max-width:600px){.subscription-summary-card{align-items:flex-start;padding:17px}.subscription-summary-icon{width:48px;height:48px;flex-basis:48px;font-size:21px}.subscription-summary-main h3{font-size:19px}.subscription-pricing-grid{grid-template-columns:1fr}.subscription-detail strong{font-size:16px}}
 
         /* StoreMaster: اختيار وتغيير قالب المتجر */
@@ -3919,6 +3920,7 @@ input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus, [cont
                     <div id="subscriptionLoading" class="subscription-state-card"><i class="fas fa-spinner fa-spin"></i> جارٍ تحميل معلومات الاشتراك من الخادم...</div>
                     <div id="subscriptionContent" style="display:none">
                         <div id="subscriptionAlert" class="subscription-alert" style="display:none"></div>
+                        <div id="subscriptionGiftedTrial" class="subscription-gifted-trial" style="display:none" role="status" aria-live="polite"></div>
                         <div class="subscription-summary-card">
                             <div class="subscription-summary-icon"><i class="fas fa-store"></i></div>
                             <div class="subscription-summary-main"><div class="subscription-eyebrow">حالة الاشتراك</div><div id="subscriptionStatus" class="subscription-status-pill">—</div><h3 id="subscriptionStoreName">متجري الإلكتروني</h3><p id="subscriptionPlanLine">العرض المختار: —</p></div>
@@ -10456,6 +10458,10 @@ async function loadSubscriptionPanel(forceRefresh=false){
     const price=d.subscriptionPrice!==null&&d.subscriptionPrice!==undefined&&d.subscriptionPrice!==''&&Number.isFinite(Number(d.subscriptionPrice))?Number(d.subscriptionPrice):(Object.prototype.hasOwnProperty.call(priceMap,d.subscriptionPlan)?priceMap[d.subscriptionPlan]:null);
     const dateText=v=>v?String(v).slice(0,10):'غير مسجل';
     const isTrial=d.subscriptionType==='trial'||d.subscriptionPlan==='trial';
+    const giftedBox=document.getElementById('subscriptionGiftedTrial');
+    const giftedDays=Number(d.trialDaysRemaining);
+    const giftedActive=Boolean(d.giftedTrialActive)&&Number.isFinite(giftedDays)&&giftedDays>0;
+    if(giftedBox){giftedBox.style.display=giftedActive?'block':'none';giftedBox.innerHTML=giftedActive?'<strong>🎁 فترة مجانية مهداة — 15 يومًا ضمن اشتراكك</strong><span>متبقي '+giftedDays+' '+(giftedDays===1?'يوم':'أيام')+' من الفترة المجانية.</span><small>تنتهي الفترة المجانية في '+String(d.trialEndDate||'').slice(0,10)+'، ثم تستمر باقتك المدفوعة تلقائيًا دون انقطاع.</small>':'';}
     const status=d.status==='not_found'?'غير مسجل':d.expired?(isTrial?'انتهت التجربة المجانية':'منتهي الصلاحية'):d.licensed?(isTrial?'تجربة مجانية نشطة':'نشط'):d.status==='active'?'غير نشط':'قيد التحقق';
     const subscriptionOnly=!!d.expired||!d.licensed;
     document.querySelectorAll('.sidebar-menu .menu-item').forEach(item=>{if(!item.classList.contains('subscription-menu-item')&&!item.classList.contains('logout-menu-item'))item.style.display=subscriptionOnly?'none':'';});
@@ -10531,6 +10537,10 @@ async function loadSubscriptionPanel(forceRefresh=false){
     const price=data.subscriptionPrice!==null&&data.subscriptionPrice!==undefined&&data.subscriptionPrice!==''&&Number.isFinite(Number(data.subscriptionPrice))?Number(data.subscriptionPrice):(Object.prototype.hasOwnProperty.call(priceMap,data.subscriptionPlan)?priceMap[data.subscriptionPlan]:null);
     const dateText=v=>v?String(v).slice(0,10):'غير مسجل';
     const isTrial=data.subscriptionType==='trial'||data.subscriptionPlan==='trial';
+    const giftedBox=document.getElementById('subscriptionGiftedTrial');
+    const giftedDays=Number(data.trialDaysRemaining);
+    const giftedActive=Boolean(data.giftedTrialActive)&&Number.isFinite(giftedDays)&&giftedDays>0;
+    if(giftedBox){giftedBox.style.display=giftedActive?'block':'none';giftedBox.innerHTML=giftedActive?'<strong>🎁 فترة مجانية مهداة — 15 يومًا ضمن اشتراكك</strong><span>متبقي '+giftedDays+' '+(giftedDays===1?'يوم':'أيام')+' من الفترة المجانية.</span><small>تنتهي الفترة المجانية في '+String(data.trialEndDate||'').slice(0,10)+'، ثم تستمر باقتك المدفوعة تلقائيًا دون انقطاع.</small>':'';}
     const status=data.status==='not_found'?'غير مسجل':data.expired?(isTrial?'انتهت التجربة المجانية':'منتهي الصلاحية'):data.licensed?(isTrial?'تجربة مجانية نشطة':'نشط'):data.status==='active'?'غير نشط':'قيد التحقق';
     const subscriptionOnly=!!data.expired||!data.licensed;
     document.querySelectorAll('.sidebar-menu .menu-item').forEach(item=>{if(!item.classList.contains('subscription-menu-item')&&!item.classList.contains('logout-menu-item'))item.style.display=subscriptionOnly?'none':'';});

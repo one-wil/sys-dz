@@ -150,22 +150,32 @@ function addMonthsISO(date, months) {
 
 function subscriptionView(license) {
   const expirationDate = license?.expirationDate || null;
+  const today = currentAlgeriaDateISO();
   let daysRemaining = null;
   if (expirationDate && isValidISODate(expirationDate)) {
-    const today = currentAlgeriaDateISO();
     daysRemaining = Math.round((Date.parse(`${expirationDate}T00:00:00.000Z`) - Date.parse(`${today}T00:00:00.000Z`)) / 86400000);
   }
+  const trialBonusDays = Number(license?.trialBonusDays || 0);
+  const trialStartDate = license?.trialStartDate || null;
+  const trialEndDate = license?.trialEndDate || null;
+  let trialDaysRemaining = null;
+  if (trialBonusDays > 0 && trialEndDate && isValidISODate(trialEndDate)) {
+    trialDaysRemaining = Math.round((Date.parse(`${trialEndDate}T00:00:00.000Z`) - Date.parse(`${today}T00:00:00.000Z`)) / 86400000);
+  }
+  const giftedTrialActive = trialBonusDays > 0 && trialDaysRemaining !== null && trialDaysRemaining > 0 && !isExpired(expirationDate);
   const plan = SUBSCRIPTION_PLANS[license?.subscriptionPlan] || null;
   const expired = isExpired(expirationDate);
   return {
     subscriptionPlan: license?.subscriptionPlan || null,
     subscriptionType: license?.subscriptionType || (license?.subscriptionPlan === "trial" ? "trial" : "paid"),
     trialUsed: Boolean(license?.trialUsed || license?.subscriptionPlan === "trial"),
-    trialBonusDays: Number(license?.trialBonusDays || 0),
-    trialBonusApplied: Number(license?.trialBonusDays || 0) > 0,
+    trialBonusDays,
+    trialBonusApplied: trialBonusDays > 0,
+    giftedTrialActive,
+    trialDaysRemaining,
     baseExpirationDate: license?.baseExpirationDate || null,
-    trialStartDate: license?.trialStartDate || null,
-    trialEndDate: license?.trialEndDate || null,
+    trialStartDate,
+    trialEndDate,
     subscriptionName: plan?.label || license?.subscriptionName || null,
     subscriptionPrice: license?.subscriptionPrice !== null && license?.subscriptionPrice !== undefined && license?.subscriptionPrice !== "" && Number.isFinite(Number(license.subscriptionPrice)) ? Number(license.subscriptionPrice) : (plan?.price ?? null),
     activationDate: license?.activationDate || license?.createdAt?.slice?.(0, 10) || null,
