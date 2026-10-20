@@ -1793,6 +1793,11 @@ function health(env) {
 /* ---------------- Verified master resource cleanup ---------------- */
 const CLEANUP_REQUEST_PREFIX = "cleanup:request:";
 
+// Normalize resource names consistently before matching GitHub and Cloudflare resources.
+function cleanupNormalizeName(value) {
+  return String(value ?? "").normalize("NFKC").trim().toLowerCase();
+}
+
 async function cleanupReferenceSets(env) {
   const repos = new Set();
   const projects = new Set();
