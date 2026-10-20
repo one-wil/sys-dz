@@ -1789,6 +1789,206 @@ function health(env) {
   };
 }
 
+
+/* ---------------- Verified master resource cleanup ---------------- */
+const CLEANUP_REQUEST_PREFIX = "cleanup:request:";
+
+async function cleanupReferenceSets(env) {
+  const repos = new Set();
+  const projects = new Set();
+  try {
+    const master = JSON.parse(await env.LICENSES.get(MASTER_DATA_KEY) || "null") || {};
+    for (const s of Array.isArray(master.stores) ? master.stores : []) {
+      const repo = s.repo || s.repository || s.github?.repository;
+      const project = s.cloudflare?.projectName || s.cloudflare?.project || s.cloudflare?.name;
+      if (repo) repos.add(cleanupNormalizeName(repo));
+      if (project) projects.add(cleanupNormalizeName(project));
+    }
+  } catch (_) {}
+  let cursor;
+  do {
+    const options = { prefix: "license:", limit: 1000 };
+    if (cursor) options.cursor = cursor;
+    const page = await env.LICENSES.list(options);
+    for (const key of page.keys || []) {
+      try {
+        const license = JSON.parse(await env.LICENSES.get(key.name) || "null");
+        if (!license) continue;
+        if (license.repository) repos.add(cleanupNormalizeName(license.repository));
+        const project = license.cloudflare?.projectName || license.cloudflare?.project || license.siteKey;
+        if (project) projects.add(cleanupNormalizeName(project));
+      } catch (_) {}
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return { repos, projects };
+}
+async function cleanupFetchInventory(env) {
+  const owner = String(env.GITHUB_OWNER || "").trim();
+  if (!owner) throw new Error("GITHUB_OWNER غير مضبوط.");
+  const refs = await cleanupReferenceSets(env);
+  const repos = [];
+  for (let page = 1; page <= 10; page++) {
+    let items;
+    try {
+      items = await github(env, `https://api.github.com/users/${encodeURIComponent(owner)}/repos?per_page=100&page=${page}&type=owner&sort=updated`);
+    } catch (userError) {
+      if (page !== 1) throw userError;
+      items = await github(env, `https://api.github.com/orgs/${encodeURIComponent(owner)}/repos?per_page=100&page=${page}&type=all&sort=updated`);
+    }
+    if (!Array.isArray(items)) throw new Error("تعذر قراءة مستودعات GitHub.");
+    repos.push(...items);
+    if (items.length < 100) break;
+  }
+  const dashboardRepo = cleanupNormalizeName(env.MASTER_DASHBOARD_REPO || "Dashboard-dz");
+  const protectedRepos = new Set([dashboardRepo, ...Object.values(TEMPLATES).map(t => cleanupNormalizeName(t.repository))]);
+  const resources = repos.map(r => {
+    const name = String(r.name || "");
+    const normalized = cleanupNormalizeName(name);
+    return {
+      type: "github", name, url: r.html_url || `https://github.com/${owner}/${name}`,
+      orphan: !refs.repos.has(normalized),
+      protected: protectedRepos.has(normalized),
+      updatedAt: r.updated_at || null,
+      private: !!r.private
+    };
+  });
+
+  const cfPath = `/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/pages/projects`;
+  for (let page = 1; page <= 10; page++) {
+    const response = await cloudflare(env, `${cfPath}?per_page=100&page=${page}`);
+    const items = Array.isArray(response?.result) ? response.result : [];
+    resources.push(...items.map(p => {
+      const name = String(p.name || "");
+      const normalized = cleanupNormalizeName(name);
+      const isDashboard = normalized === cleanupNormalizeName(env.MASTER_DASHBOARD_PROJECT || env.MASTER_DASHBOARD_REPO || "Dashboard-dz");
+      return {
+        type: "cloudflare", name,
+        url: p.subdomain ? `https://${p.subdomain}` : `https://${name}.pages.dev`,
+        orphan: !refs.projects.has(normalized),
+        protected: isDashboard,
+        updatedAt: p.created_on || null,
+        productionBranch: p.production_branch || null
+      };
+    }));
+    const totalPages = Number(response?.result_info?.total_pages || 0);
+    if (items.length < 100 || (totalPages && page >= totalPages)) break;
+  }
+  return resources;
+}
+async function masterCleanupScan(request, env) {
+  if (!requireMaster(request, env)) return error("MASTER_API_KEY invalide", 401);
+  try {
+    const resources = await cleanupFetchInventory(env);
+    return success({ resources, scannedAt: new Date().toISOString() });
+  } catch (e) {
+    return error("تعذر فحص الموارد في GitHub وCloudflare", 502, e?.message || String(e));
+  }
+}
+async function masterCleanupRequestCode(request, env) {
+  if (!requireMaster(request, env)) return error("MASTER_API_KEY invalide", 401);
+  const configuredCode = String(env.CLEANUP_DELETE_CODE || "");
+  if (configuredCode.length < 12) {
+    return error("أضف Secret باسم CLEANUP_DELETE_CODE في Cloudflare، واجعل قيمته رمزًا سريًا لا يقل عن 12 حرفًا.", 503);
+  }
+
+  let body;
+  try { body = await request.json(); } catch { return error("JSON invalide", 400); }
+  const targets = Array.isArray(body.targets) ? body.targets : [];
+  if (!targets.length || targets.length > 20) return error("اختر من مورد واحد إلى 20 موردًا في كل عملية.", 400);
+
+  let inventory;
+  try { inventory = await cleanupFetchInventory(env); }
+  catch (e) { return error("تعذر التحقق من قائمة الموارد الحالية.", 502, e?.message || String(e)); }
+
+  const byId = new Map(inventory.map(r => [`${r.type}:${cleanupNormalizeName(r.name)}`, r]));
+  const checked = [];
+  const seen = new Set();
+  for (const item of targets) {
+    const type = String(item?.type || "");
+    const name = String(item?.name || "").trim();
+    if (!["github", "cloudflare"].includes(type) || !name || name.length > 100) return error("مورد غير صالح في الطلب.", 400);
+    const id = `${type}:${cleanupNormalizeName(name)}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const actual = byId.get(id);
+    if (!actual) return error(`المورد ${name} غير موجود حاليًا في ${type}. أعد فحص القائمة.`, 409);
+    if (actual.protected) return error(`المورد ${name} محمي ولا يمكن حذفه من هذه الواجهة.`, 403);
+    checked.push({ type, name: actual.name, url: actual.url, orphan: actual.orphan });
+  }
+  if (!checked.length) return error("لم يتم اختيار موارد صالحة.", 400);
+
+  const requestId = crypto.randomUUID();
+  const record = {
+    requestId,
+    // Store only a hash bound to this request; the secret itself never leaves Worker.
+    secretHash: await sha256(`${requestId}:${configuredCode}`),
+    targets: checked, attempts: 0, createdAt: Date.now(), used: false
+  };
+  await env.LICENSES.put(CLEANUP_REQUEST_PREFIX + requestId, JSON.stringify(record), { expirationTtl: 600 });
+  return success({
+    requestId,
+    expiresInSeconds: 600,
+    message: "تم تجهيز طلب الحذف. أدخل الرمز السري المحفوظ في Cloudflare للتأكيد."
+  });
+}
+async function masterCleanupConfirm(request, env) {
+  if (!requireMaster(request, env)) return error("MASTER_API_KEY invalide", 401);
+  let body;
+  try { body = await request.json(); } catch { return error("JSON invalide", 400); }
+  const requestId = String(body.requestId || "").trim();
+  const code = String(body.code || "").trim();
+  if (!/^[0-9a-f-]{20,60}$/i.test(requestId) || code.length < 12 || code.length > 200) return error("طلب التحقق أو الرمز السري غير صالح.", 400);
+  const key = CLEANUP_REQUEST_PREFIX + requestId;
+  let record;
+  try { record = JSON.parse(await env.LICENSES.get(key) || "null"); } catch (_) {}
+  if (!record || record.used) return error("طلب التحقق غير موجود أو استُخدم. ابدأ طلب حذف جديدًا.", 410);
+  if (Date.now() - Number(record.createdAt || 0) > 10 * 60 * 1000) {
+    await env.LICENSES.delete(key);
+    return error("انتهت صلاحية طلب الحذف. ابدأ طلبًا جديدًا.", 410);
+  }
+  if (Number(record.attempts || 0) >= 5) {
+    await env.LICENSES.delete(key);
+    return error("تم تجاوز عدد المحاولات. ابدأ طلب حذف جديدًا.", 429);
+  }
+  const configuredCode = String(env.CLEANUP_DELETE_CODE || "");
+  if (configuredCode.length < 12) return error("Secret CLEANUP_DELETE_CODE غير مضبوط في Cloudflare.", 503);
+  const expected = await sha256(`${requestId}:${configuredCode}`);
+  const submitted = await sha256(`${requestId}:${code}`);
+  if (submitted !== expected || record.secretHash !== expected) {
+    record.attempts = Number(record.attempts || 0) + 1;
+    await env.LICENSES.put(key, JSON.stringify(record), { expirationTtl: 600 });
+    return error(`الرمز السري غير صحيح. المحاولات المتبقية: ${Math.max(0, 5 - record.attempts)}.`, 401);
+  }
+
+  // Consume the one-time authorization before performing any destructive action.
+  record.used = true;
+  await env.LICENSES.put(key, JSON.stringify(record), { expirationTtl: 600 });
+  const results = [];
+  for (const target of record.targets || []) {
+    try {
+      if (target.type === "github") {
+        const owner = String(env.GITHUB_OWNER || "").trim();
+        await github(env, `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(target.name)}`, { method: "DELETE" });
+      } else if (target.type === "cloudflare") {
+        await cloudflare(env, `/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/pages/projects/${encodeURIComponent(target.name)}`, { method: "DELETE" });
+      } else {
+        throw new Error("نوع مورد غير مسموح.");
+      }
+      results.push({ type: target.type, name: target.name, success: true, message: "تم الحذف من الخدمة." });
+    } catch (e) {
+      results.push({ type: target.type, name: target.name, success: false, message: e?.message || String(e) });
+    }
+  }
+  await env.LICENSES.delete(key);
+  return success({
+    results,
+    allSucceeded: results.length > 0 && results.every(x => x.success),
+    message: "اكتملت محاولة التنظيف. راجع نتيجة كل مورد."
+  });
+}
+
+
 /* ---------------- Router ---------------- */
 
 export default {
@@ -1820,6 +2020,16 @@ export default {
 
       if (!env.GITHUB_OWNER) return error("Variable GITHUB_OWNER manquante", 500);
       if (!env.GITHUB_TOKEN) return error("Secret GITHUB_TOKEN manquant", 500);
+
+      if (method === "GET" && path === "/api/master/cleanup/scan") {
+        return masterCleanupScan(request, env);
+      }
+      if (method === "POST" && path === "/api/master/cleanup/request-code") {
+        return masterCleanupRequestCode(request, env);
+      }
+      if (method === "POST" && path === "/api/master/cleanup/confirm") {
+        return masterCleanupConfirm(request, env);
+      }
 
       if (method === "POST" && path === "/api/admin/login") {
         return login(request, env);
